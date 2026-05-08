@@ -297,6 +297,7 @@ input[type=number]{width:100px}
   <div class="nav-item" onclick="goTo('movimientos')"><span class="nav-icon">↕</span> Movimientos <span class="nav-badge" id="badge-pend" style="display:none">0</span></div>
   <div class="nav-item" onclick="goTo('ingresos')"><span class="nav-icon">↑</span> Ingresos</div>
   <div class="nav-item" onclick="goTo('presupuesto')"><span class="nav-icon">◎</span> Presupuesto</div>
+  <div class="nav-item" onclick="goTo('tarjetas')"><span class="nav-icon">💳</span> Tarjetas</div>
 
   <div class="nav-section">Planificación</div>
   <div class="nav-item" onclick="goTo('planes')"><span class="nav-icon">◷</span> Planes anuales</div>
@@ -353,6 +354,13 @@ input[type=number]{width:100px}
       <div class="card-title">Planes anuales — estado</div>
       <div id="dash-planes-tabla"></div>
     </div>
+  </div>
+
+  <!-- Mejora 2-3: desglose de "Varios" agrupado por palabra clave de la nota -->
+  <div class="card" id="dash-varios-card" style="display:none;margin-bottom:1rem">
+    <div class="card-title">Desglose de "Varios" — agrupado por palabra clave de la nota</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:.75rem">Los movimientos de la categoría "Varios" se agrupan por la primera palabra de su nota. Edita la nota de un movimiento para que se agrupe correctamente.</div>
+    <div id="dash-varios-body"></div>
   </div>
 
   <!-- Conclusiones / alertas -->
@@ -552,6 +560,39 @@ input[type=number]{width:100px}
 </div>
 
 
+</div>
+
+<!-- ══════════ TARJETAS ══════════ -->
+<div class="page" id="p-tarjetas">
+  <div class="page-header">
+    <div class="page-title">Tarjetas de crédito</div>
+    <div class="page-sub">Cada tarjeta tiene un límite mensual que se resetea con cada cierre. El recibo del mes anterior se reconcilia automáticamente cuando entra el cargo en ING.</div>
+  </div>
+  <div class="tabs">
+    <button class="tab active" onclick="tarjTab('actual',this)">Mes en curso</button>
+    <button class="tab" onclick="tarjTab('reconciliar',this)">Reconciliar cargo</button>
+    <button class="tab" onclick="tarjTab('historico',this)">Histórico</button>
+  </div>
+  <div id="tarj-actual">
+    <div id="tarj-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1rem;margin-bottom:1rem"></div>
+  </div>
+  <div id="tarj-reconciliar" style="display:none">
+    <div class="card">
+      <div class="card-title">Cargos pendientes de reconciliar</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:.75rem">Cuando importas el extracto de ING y aparece un cargo grande de tarjeta, lo verás aquí como candidato a reconciliar con el recibo pendiente del mes anterior.</div>
+      <div id="tarj-recibos-pendientes"></div>
+      <div style="margin-top:1rem">
+        <div class="card-title" style="font-size:13px;margin-top:1rem">Posibles cargos en cuenta ING</div>
+        <div id="tarj-candidatos-cargo"></div>
+      </div>
+    </div>
+  </div>
+  <div id="tarj-historico" style="display:none">
+    <div class="card">
+      <div class="card-title">Histórico de cargos por tarjeta</div>
+      <div id="tarj-historico-tabla"></div>
+    </div>
+  </div>
 </div>
 <div class="page" id="p-planes">
   <div class="page-header">
@@ -761,11 +802,9 @@ input[type=number]{width:100px}
       <button class="btn btn-primary btn-sm" onclick="guardarSaldoING()">Guardar</button>
     </div>
     <div class="card" style="margin-bottom:0">
-      <div class="card-title">Deuda tarjetas — editable</div>
-      <div class="info-box" style="margin-bottom:.75rem"><p style="font-size:11px">Edita directamente el importe pendiente de cada tarjeta.</p></div>
+      <div class="card-title">Tarjetas — gasto del mes en curso</div>
+      <div class="info-box" style="margin-bottom:.75rem"><p style="font-size:11px">Solo informativo. Edita los límites y reconcilia recibos en la pestaña <b>💳 Tarjetas</b>.</p></div>
       <div id="deuda-tarjetas-edit"></div>
-      <div class="divider"></div>
-      <button class="btn btn-primary btn-sm" onclick="guardarDeudas()">Guardar deudas</button>
     </div>
   </div>
   <div class="card">
@@ -1174,6 +1213,18 @@ function markDirty(){
   }
 }
 
+// Guarda el estado completo de tarjetas en Supabase (debounced para edición rápida)
+let _debounceTarjetas = null;
+function guardarTarjetas(){
+  markDirty();
+  if(_debounceTarjetas) clearTimeout(_debounceTarjetas);
+  _debounceTarjetas = setTimeout(()=>{
+    supa('config','POST',{id:1, ...STATE.config, tarjetas_json: JSON.stringify(STATE.tarjetas||{})})
+      .then(()=>setSyncStatus('ok'))
+      .catch(e=>{console.warn('Error guardando tarjetas:',e); setSyncStatus('error');});
+  }, 500);
+}
+
 let STATE = {
   config: {nombre:'Familia Juan y Laura', p1:'Juan', p2:'Laura', nom1:1440, nom2:5800, fiscal:'Sep – Ago'},
   partidas: [
@@ -1264,6 +1315,14 @@ let STATE = {
     {id:'p4', tipo:'fondo',    entidad:'MyInvestor', nombre:'Fondo monetario EUR', capital:0, tae:3.6, vencimiento:null, rentCobrada:0, rentAbs:0},
   ],
   deuda:{'cred-juan':3632,'cred-laura':0,'iberia-juan':1600,'iberia-laura':1784},
+  // Mejoras 7-8: estado de tarjetas. Cada tarjeta tiene límite mensual + recibo
+  // pendiente del mes anterior (informativo, NO se resta del disponible).
+  tarjetas: {
+    'iberia-juan':  {limite:0, recibo_pendiente:0, fecha_recibo:'', mes_recibo:'', historico:[]},
+    'iberia-laura': {limite:0, recibo_pendiente:0, fecha_recibo:'', mes_recibo:'', historico:[]},
+    'cred-juan':    {limite:0, recibo_pendiente:0, fecha_recibo:'', mes_recibo:'', historico:[]},
+    'cred-laura':   {limite:0, recibo_pendiente:0, fecha_recibo:'', mes_recibo:'', historico:[]}
+  },
   saldoING: 12866,
   saldoReservado: 8423,
   versiones: [],
@@ -1330,6 +1389,16 @@ let colorGrupoSel = '#f0605a';
 
 function fmt(n){return Math.round(Math.abs(n)).toLocaleString('es-ES')+'€';}
 function fmtD(n){return (n>0?'+':'')+Math.round(n).toLocaleString('es-ES')+'€';}
+// Mejora 4: formato fecha unificado 26/abr/2026
+const _MESES_ABR=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+function fmtFechaCorta(f){
+  if(!f) return '—';
+  const partes=String(f).split('/');
+  if(partes.length!==3) return f;
+  const m=parseInt(partes[1],10);
+  if(isNaN(m)||m<1||m>12) return f;
+  return partes[0]+'/'+_MESES_ABR[m-1]+'/'+partes[2];
+}
 function destroyChart(id){if(charts[id]){charts[id].destroy();delete charts[id];}}
 function gastadoPlan(p){ return (p.gastos||[]).reduce(function(a,g){return a+g.importe;},0); }
 function asignadoPlan(p){ return p.asignado||0; }
@@ -1426,6 +1495,16 @@ async function iniciarApp(){
   }catch(e){
     console.warn('syncLoad error:', e);
   }
+  // Migración suave: si las tarjetas no tienen datos pero STATE.deuda sí,
+  // trasladamos esos importes a recibo_pendiente del mes anterior.
+  ['cred-juan','cred-laura','iberia-juan','iberia-laura'].forEach(id=>{
+    if(!STATE.tarjetas[id]) STATE.tarjetas[id] = {limite:0, recibo_pendiente:0, historico:[]};
+    const t = STATE.tarjetas[id];
+    if(t.recibo_pendiente===0 && (STATE.deuda[id]||0)>0){
+      t.recibo_pendiente = STATE.deuda[id];
+      t.mes_recibo = (STATE.exceso_mes && STATE.exceso_mes.mes) || 'mes anterior';
+    }
+  });
   document.getElementById('loading').style.display='none';
   document.getElementById('app').style.display='grid';
   renderDashboard();
@@ -1454,6 +1533,7 @@ function goTo(page){
   document.querySelector(`.nav-item[onclick="goTo('${page}')"]`)?.classList.add('active');
   const renders = {
     dashboard:renderDashboard, movimientos:renderMovimientos, presupuesto:renderPresupuesto,
+    tarjetas:renderTarjetas,
     ingresos:renderIngresos, hipoteca:renderHipoteca, planes:renderPlanes, prorratas:renderProrratas, cierre:renderCierre,
     saldo:renderSaldo, ahorros:renderAhorros, graficas:renderGraficas,
     suministros:renderSuministros, reglas:renderReglas, config:renderConfig
@@ -1484,7 +1564,18 @@ async function syncLoad(){
   try{
     const tables = ['config','movimientos','pendientes','reglas','prorratas','planes','fuentes','productos','deuda','cierres','ingresos','presupuesto','bloques'];
     const results = await Promise.all(tables.map(t=>supa(t).catch(e=>{console.warn('Tabla '+t+' no disponible:',e); return null;})));
-    if(results[0]&&results[0].length) STATE.config = {...STATE.config,...results[0][0]};
+    if(results[0]&&results[0].length){
+      const cfg = results[0][0];
+      // tarjetas_json es un blob JSON con el estado de las 4 tarjetas
+      if(cfg.tarjetas_json){
+        try{
+          const parsed = typeof cfg.tarjetas_json==='string' ? JSON.parse(cfg.tarjetas_json) : cfg.tarjetas_json;
+          if(parsed && typeof parsed==='object') STATE.tarjetas = {...STATE.tarjetas, ...parsed};
+        }catch(e){console.warn('Error parseando tarjetas_json:',e);}
+        delete cfg.tarjetas_json;
+      }
+      STATE.config = {...STATE.config,...cfg};
+    }
     if(results[1]&&results[1].length) STATE.movimientos = results[1];
     if(results[2]&&results[2].length) STATE.pendientes = results[2];
     if(results[3]&&results[3].length) STATE.reglas = results[3][0]?.data || STATE.reglas;
@@ -1624,8 +1715,11 @@ async function syncSaveAll(){
     saves.push(supa('reglas','POST',{data: STATE.reglas}));
     // Deuda (incluye saldoING)
     saves.push(supa('deuda','POST',{id:1, ...STATE.deuda, saldo_ing:STATE.saldoING}));
-    // Config
-    saves.push(supa('config','POST',{id:1, ...STATE.config}));
+    // Config (incluye tarjetas como JSON)
+    saves.push(supa('config','POST',{
+      id:1, ...STATE.config,
+      tarjetas_json: JSON.stringify(STATE.tarjetas||{})
+    }));
 
     const results = await Promise.allSettled(saves);
     const fallos = results.filter(r=>r.status==='rejected').length;
@@ -1725,12 +1819,13 @@ function renderListado(){
   if(tbody) tbody.innerHTML=filtrados.length
     ?filtrados.map(m=>{
       const esIngreso = typeof m.cat==='string' && m.cat.startsWith('__INGRESO__:');
+      const esTarjeta = ['cred-juan','cred-laura','iberia-juan','iberia-laura'].includes(m.fuente);
       const catLimpia = esIngreso ? m.cat.slice('__INGRESO__:'.length) : (m.cat||'—');
       const catBadge = esIngreso ? `<span class="badge b-green" style="font-size:10px">↑ ${catLimpia}</span>` : `<span class="badge b-neu" style="font-size:10px">${catLimpia}</span>`;
       return `<tr>
-      <td style="font-size:12px;color:var(--text2);white-space:nowrap">${m.fecha}</td>
+      <td style="font-size:12px;color:var(--text2);white-space:nowrap">${fmtFechaCorta(m.fecha)}</td>
       <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${m.concepto}">${m.concepto}</td>
-      <td><span class="badge b-blue" style="font-size:10px">${FUENTE_LABEL[m.fuente]||m.fuente||'—'}</span></td>
+      <td><span class="badge ${esTarjeta?'b-amber':'b-blue'}" style="font-size:10px">${esTarjeta?'💳 ':''}${FUENTE_LABEL[m.fuente]||m.fuente||'—'}</span></td>
       <td>${catBadge}</td>
       <td style="text-align:right;font-weight:500" class="${m.importe<0?'neg':'pos'}">${m.importe}€</td>
       <td>
@@ -1830,9 +1925,9 @@ function renderPendientes(){
   el.innerHTML=STATE.pendientes.map(function(p){
     var id=p.id;
     var esIngreso = p.importe > 0;
+    var esTarjeta = ['cred-juan','cred-laura','iberia-juan','iberia-laura'].includes(p.fuente);
     var opts;
     if(esIngreso){
-      // Selector de ingreso: opciones existentes + "+ Nuevo concepto"
       opts = '<optgroup label="Ingresos existentes">'+
         CATS_ING.map(function(c){return '<option value="ING:'+c+'"'+(p.cat==='ING:'+c?' selected':'')+'>'+c+'</option>';}).join('')+
         '</optgroup>'+
@@ -1845,13 +1940,15 @@ function renderPendientes(){
     }
     var imp=p.importe<0?'neg':'pos';
     var bgIngreso = esIngreso ? 'background:rgba(45,212,160,0.05);' : '';
-    return '<div style="display:grid;grid-template-columns:80px minmax(0,1fr) 80px 180px 80px auto;gap:8px;align-items:center;padding:8px;border-bottom:1px solid var(--border);'+bgIngreso+'">'+
-      '<span style="font-size:11px;color:var(--text2);white-space:nowrap">'+p.fecha+'</span>'+
+    var badgeFuente = '<span class="badge '+(esTarjeta?'b-amber':'b-blue')+'" style="font-size:10px;white-space:nowrap">'+(esTarjeta?'💳 ':'')+(FUENTE_LABEL[p.fuente]||p.fuente)+'</span>';
+    return '<div style="display:grid;grid-template-columns:75px minmax(0,1fr) 130px 75px 170px 70px auto;gap:8px;align-items:center;padding:8px;border-bottom:1px solid var(--border);'+bgIngreso+'">'+
+      '<span style="font-size:11px;color:var(--text2);white-space:nowrap">'+fmtFechaCorta(p.fecha)+'</span>'+
       '<div style="min-width:0"><div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+p.concepto+'">'+(esIngreso?'<span style="color:var(--green);margin-right:4px">↑</span>':'')+p.concepto+'</div>'+
-      '<div style="font-size:11px;color:var(--text3)">'+(FUENTE_LABEL[p.fuente]||p.fuente)+(esIngreso?' · INGRESO':'')+'</div></div>'+
+      (esIngreso?'<div style="font-size:10px;color:var(--green);font-weight:500">INGRESO</div>':'')+'</div>'+
+      '<div>'+badgeFuente+'</div>'+
       '<span class="'+imp+'" style="font-weight:500;text-align:right;white-space:nowrap">'+(p.importe>0?'+':'')+p.importe+'€</span>'+
       '<select id="psel-'+id+'" onchange="asignarPend(this.dataset.pid,this.value)" data-pid="'+id+'" style="width:100%"><option value="">— elegir —</option>'+opts+'</select>'+
-      '<input type="text" id="pnota-'+id+'" placeholder="Nota (opcional)" value="'+(p.nota||'')+'" style="width:100%;font-size:11px">'+
+      '<input type="text" id="pnota-'+id+'" placeholder="Nota" value="'+(p.nota||'')+'" style="width:100%;font-size:11px">'+
       '<div style="display:flex;gap:4px">'+
         '<button class="btn btn-sm btn-primary" data-pid="'+id+'" onclick="guardarUnoPend(this.dataset.pid)" style="padding:4px 8px">&#10003;</button>'+
         '<button class="btn btn-sm btn-danger" data-pid="'+id+'" onclick="descartarPend(this.dataset.pid)" style="padding:4px 8px">&#10005;</button>'+
@@ -2120,8 +2217,11 @@ function renderDashboard(){
   const ingMes = STATE.ingresos.filter(i=>i.periodo==='mensual').reduce((a,i)=>a+i.importe,0);
   const balanceMes = ingMes - gastoMes;
   const TARJETAS = ['cred-juan','cred-laura','iberia-juan','iberia-laura'];
-  const totalDeuda = TARJETAS.reduce((a,k)=>a+(STATE.deuda[k]||0),0);
-  const disponible = STATE.saldoING - totalDeuda - (STATE.saldoReservado||0);
+  // Mejora 9: el saldo disponible solo descuenta el GASTO MES EN CURSO de las tarjetas,
+  // no el recibo pendiente del mes anterior (que ya saldrá automáticamente cuando entre el cargo en ING).
+  const gastoTarjetasMes = TARJETAS.reduce((a,k)=>a+gastoTarjetaMesActual(k),0);
+  const reciboPendienteTotal = TARJETAS.reduce((a,k)=>a+(STATE.tarjetas[k]?.recibo_pendiente||0),0);
+  const disponible = STATE.saldoING - gastoTarjetasMes - (STATE.saldoReservado||0);
 
   // KPIs
   // Mejora 7: hero saldo disponible
@@ -2133,11 +2233,12 @@ function renderDashboard(){
       <div>
         <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#a0a8c0;margin-bottom:6px">Saldo disponible real</div>
         <div style="font-size:34px;font-weight:600;letter-spacing:-0.5px;color:${dispClass}">${dispSigno}${fmt(Math.abs(disponible))}</div>
-        <div style="font-size:12px;color:#a0a8c0;margin-top:4px">ING ${fmt(STATE.saldoING)} − Tarjetas ${fmt(totalDeuda)} − Reservado ${fmt(STATE.saldoReservado||0)}</div>
+        <div style="font-size:12px;color:#a0a8c0;margin-top:4px">ING ${fmt(STATE.saldoING)} − Gasto tarjetas mes ${fmt(gastoTarjetasMes)} − Reservado ${fmt(STATE.saldoReservado||0)}</div>
       </div>
       <div style="text-align:right">
-        <div style="font-size:11px;color:#a0a8c0;margin-bottom:4px">Deuda tarjetas</div>
-        <div style="font-size:18px;font-weight:500;color:#ffb47a">${fmt(totalDeuda)}</div>
+        <div style="font-size:11px;color:#a0a8c0;margin-bottom:4px">Gasto tarjetas mes</div>
+        <div style="font-size:18px;font-weight:500;color:#ffb47a">${fmt(gastoTarjetasMes)}</div>
+        ${reciboPendienteTotal>0?`<div style="font-size:10px;color:#a0a8c0;margin-top:6px">Recibo pendiente (no contabilizado): ${fmt(reciboPendienteTotal)}</div>`:''}
       </div>`;
   }
 
@@ -2145,7 +2246,7 @@ function renderDashboard(){
     <div class="kpi"><div class="kpi-label">Gasto mes en curso</div><div class="kpi-value ${gastoMes>presup?'neg':''}">${fmt(gastoMes)}</div><div class="kpi-sub">${movsActuales.length} movimientos</div></div>
     <div class="kpi"><div class="kpi-label">Presupuesto mensual</div><div class="kpi-value">${fmt(presup)}</div><div class="kpi-sub">${gastoMes>0?Math.round(gastoMes/presup*100)+'% consumido':''}</div></div>
     <div class="kpi"><div class="kpi-label">Balance nóminas</div><div class="kpi-value ${balanceMes>=0?'pos':'neg'}">${fmtD(balanceMes)}</div><div class="kpi-sub">vs ingresos ${fmt(ingMes)}</div></div>
-    <div class="kpi"><div class="kpi-label">Disponible real</div><div class="kpi-value ${disponible>=0?'pos':'neg'}">${disponible>=0?'+':'-'}${fmt(Math.abs(disponible))}</div><div class="kpi-sub">ING − tarjetas − reservado</div></div>`;
+    <div class="kpi"><div class="kpi-label">Disponible real</div><div class="kpi-value ${disponible>=0?'pos':'neg'}">${disponible>=0?'+':'-'}${fmt(Math.abs(disponible))}</div><div class="kpi-sub">ING − gasto tarjetas mes − reservado</div></div>`;
 
   // Gráfica gastos vs presupuesto por categoría (solo mes en curso)
   const gastoPorCat = {};
@@ -2255,6 +2356,89 @@ function renderDashboard(){
       '<div style="color:var(--green);font-size:13px;font-weight:500">✓ Todo en orden — gastos dentro del presupuesto</div>';
   }
   document.getElementById('dash-conclusiones-body').innerHTML = conclusiones;
+
+  // Mejora 2-3: desglose de "Varios" agrupado por palabra clave de la nota
+  renderDashVarios(movsActuales);
+}
+
+// Agrupa los movimientos de la categoría "Varios" del mes en curso por la
+// primera palabra significativa de su nota. Sin nota → "Sin clasificar".
+function renderDashVarios(movsActuales){
+  const card = document.getElementById('dash-varios-card');
+  const body = document.getElementById('dash-varios-body');
+  if(!card || !body) return;
+
+  // Localizar la partida "Varios" (puede llamarse exactamente Varios o variantes)
+  const partidaVarios = STATE.partidas.find(p =>
+    p.cat && p.cat.toLowerCase().includes('varios')
+  );
+  if(!partidaVarios){
+    card.style.display = 'none';
+    return;
+  }
+
+  const movsVarios = (movsActuales||STATE.movimientos).filter(m =>
+    m.cat === partidaVarios.cat && m.importe < 0
+  );
+
+  if(!movsVarios.length){
+    card.style.display = 'none';
+    return;
+  }
+
+  // Agrupar por primera palabra de la nota (normalizada: minúscula, sin tildes)
+  const grupos = {};
+  movsVarios.forEach(m => {
+    let clave = 'Sin nota';
+    if(m.nota && m.nota.trim()){
+      const primera = m.nota.trim().split(/\s+/)[0];
+      clave = primera.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+        .replace(/[^a-z0-9]/g,'');
+      clave = clave.charAt(0).toUpperCase() + clave.slice(1);
+      if(!clave) clave = 'Sin nota';
+    }
+    if(!grupos[clave]) grupos[clave] = {total:0, movs:[]};
+    grupos[clave].total += Math.abs(m.importe);
+    grupos[clave].movs.push(m);
+  });
+
+  const totalVarios = movsVarios.reduce((a,m)=>a+Math.abs(m.importe),0);
+  const presupVarios = partidaVarios.amt;
+  const filas = Object.entries(grupos)
+    .sort(([,a],[,b]) => b.total - a.total)
+    .map(([clave, g]) => {
+      const pct = totalVarios>0 ? Math.round(g.total/totalVarios*100) : 0;
+      const muestra = g.movs.slice(0,3).map(m=>m.concepto.slice(0,30)).join(' · ');
+      return `<tr>
+        <td style="font-weight:500">${clave}</td>
+        <td style="text-align:right;font-weight:500" class="neg">-${fmt(g.total)}</td>
+        <td style="text-align:right;color:var(--text3)">${pct}%</td>
+        <td style="text-align:right;color:var(--text3)">${g.movs.length}</td>
+        <td style="font-size:11px;color:var(--text3);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${g.movs.map(m=>m.concepto).join(' | ')}">${muestra}${g.movs.length>3?'…':''}</td>
+      </tr>`;
+    }).join('');
+
+  card.style.display = 'block';
+  body.innerHTML = `<table style="width:100%">
+    <thead><tr>
+      <th style="text-align:left">Grupo (palabra clave de la nota)</th>
+      <th style="text-align:right">Importe</th>
+      <th style="text-align:right" title="% del total de Varios">% Varios</th>
+      <th style="text-align:right">Mov.</th>
+      <th>Conceptos (muestra)</th>
+    </tr></thead>
+    <tbody>${filas}</tbody>
+    <tfoot>
+      <tr style="font-weight:600;border-top:1px solid var(--border2)">
+        <td>Total "Varios" del mes</td>
+        <td style="text-align:right" class="neg">-${fmt(totalVarios)}</td>
+        <td style="text-align:right;color:var(--text3)">${presupVarios>0?Math.round(totalVarios/presupVarios*100):0}% pres.</td>
+        <td style="text-align:right;color:var(--text3)">${movsVarios.length}</td>
+        <td style="font-size:11px;color:var(--text3)">Presupuesto: ${fmt(presupVarios)}</td>
+      </tr>
+    </tfoot>
+  </table>`;
 }
 
 
@@ -2297,7 +2481,7 @@ function actualizarBannerUltimoMov(){
   if(!mejor){ banner.style.display='none'; return; }
   const fuenteLbl = (typeof FUENTE_LABEL!=='undefined' && FUENTE_LABEL[mejor.fuente]) || mejor.fuente || '—';
   banner.style.display='block';
-  banner.innerHTML = `<b>Último movimiento importado:</b> ${mejor.fecha} · <span style="color:var(--text3)">${fuenteLbl}</span> · ${mejor.concepto.length>50?mejor.concepto.slice(0,50)+'…':mejor.concepto} <span class="${mejor.importe<0?'neg':'pos'}" style="font-weight:500;margin-left:6px">${mejor.importe}€</span>`;
+  banner.innerHTML = `<b>Último movimiento importado:</b> ${fmtFechaCorta(mejor.fecha)} · <span style="color:var(--text3)">${fuenteLbl}</span> · ${mejor.concepto.length>50?mejor.concepto.slice(0,50)+'…':mejor.concepto} <span class="${mejor.importe<0?'neg':'pos'}" style="font-weight:500;margin-left:6px">${mejor.importe}€</span>`;
 }
 
 function selFuente(f){
@@ -2388,6 +2572,8 @@ function procesarWB(wb, fuente){
   }
 
   let autoClasif=[], nuevoPend=[], nuevaDeuda=0, descartadosPorCierre=0;
+  // Mejora 10: capturar saldo del movimiento ING más reciente
+  let saldoIngMasReciente = null, fechaSaldoIng = null;
   const esTarjeta=['cred-juan','cred-laura','iberia-juan','iberia-laura'].includes(fuente);
 
   // Mejora 1: descartar movimientos con fecha <= último cierre.
@@ -2410,9 +2596,21 @@ function procesarWB(wb, fuente){
       const iF=headers.findIndex(h=>h.includes('VALOR'));
       const iD=headers.findIndex(h=>h.includes('DESCRIPCI'));
       const iI=headers.findIndex(h=>h.includes('IMPORTE'));
+      const iS=headers.findIndex(h=>h.includes('SALDO'));
       fecha  = fmtFecha(row[iF]);
       concepto = String(row[iD]||'').trim();
       importe  = fmtImporte(row[iI]);
+      // Capturar saldo si está disponible y la fecha es más reciente
+      if(iS>=0 && row[iS]!=null){
+        const saldoFila = fmtImporte(row[iS]);
+        const fechaP = parseFecha(fecha);
+        if(saldoFila!==null && !isNaN(saldoFila) && fechaP){
+          if(!fechaSaldoIng || fechaP.getTime() > fechaSaldoIng.getTime()){
+            saldoIngMasReciente = saldoFila;
+            fechaSaldoIng = fechaP;
+          }
+        }
+      }
 
     } else if(fuente.startsWith('cred')){
       // FECHA VALOR | CATEGORÍA | SUBCATEGORÍA | DESCRIPCION | COMENTARIO | ESTADO | IMPORTE (€)
@@ -2549,10 +2747,15 @@ function procesarWB(wb, fuente){
     });
   }
 
-  // Actualizar deuda si es tarjeta
-  if(esTarjeta && nuevaDeuda>0){
-    STATE.deuda[fuente] = Math.round(nuevaDeuda*100)/100;
-    supa('deuda','POST',{id:1,...STATE.deuda});
+  // Mejoras 7-8: con el nuevo modelo, ya no se actualiza STATE.deuda al importar tarjetas.
+  // El gasto del mes en curso se calcula al vuelo desde STATE.movimientos.
+  // STATE.deuda se conserva solo por compatibilidad histórica.
+
+  // Mejora 10: actualizar saldo ING con el del movimiento más reciente del extracto
+  if(fuente==='ing' && saldoIngMasReciente!==null){
+    STATE.saldoING = Math.round(saldoIngMasReciente*100)/100;
+    supa('deuda','POST',{id:1, ...STATE.deuda, saldo_ing:STATE.saldoING})
+      .catch(e=>console.warn('Error guardando saldo ING:',e));
   }
 
   actualizarBadge();
@@ -2570,13 +2773,20 @@ function procesarWB(wb, fuente){
     return;
   }
 
+  // Si es tarjeta, calcular el gasto actual del mes en curso para mostrarlo
+  let gastoTarjMsg = '';
+  if(esTarjeta){
+    const gastoMes = gastoTarjetaMesActual(fuente);
+    if(gastoMes>0) gastoTarjMsg = ` · Gasto mes en curso de la tarjeta: <b>${fmt(gastoMes)}</b>`;
+  }
+
   res.innerHTML=`
-    <div class="ok-box"><p><b>${total} movimientos</b> procesados de ${FUENTE_LABEL[fuente]||fuente}${esTarjeta&&nuevaDeuda>0?` · Deuda actualizada: <b>${fmt(nuevaDeuda)}</b>`:''}${descartadosPorCierre>0?` · ${descartadosPorCierre} descartado(s) por cierre`:''}</p></div>
+    <div class="ok-box"><p><b>${total} movimientos</b> procesados de ${FUENTE_LABEL[fuente]||fuente}${gastoTarjMsg}${fuente==='ing'&&saldoIngMasReciente!==null?` · Saldo ING actualizado: <b>${fmt(saldoIngMasReciente)}</b>`:''}${descartadosPorCierre>0?` · ${descartadosPorCierre} descartado(s) por cierre`:''}</p></div>
     <div class="card"><div class="kpi-grid">
       <div class="kpi"><div class="kpi-label">Clasificados auto</div><div class="kpi-value pos">${autoClasif.length}</div></div>
       <div class="kpi"><div class="kpi-label">Pendientes</div><div class="kpi-value ${nuevoPend.length?'warn':'pos'}">${nuevoPend.length}</div></div>
       ${descartadosPorCierre>0?`<div class="kpi"><div class="kpi-label">Pre-cierre</div><div class="kpi-value" style="color:var(--text3)">${descartadosPorCierre}</div></div>`:''}
-      ${esTarjeta&&nuevaDeuda>0?`<div class="kpi"><div class="kpi-label">Deuda tarjeta</div><div class="kpi-value neg">${fmt(nuevaDeuda)}</div></div>`:''}
+      ${esTarjeta?`<div class="kpi"><div class="kpi-label">Gasto tarjeta mes</div><div class="kpi-value neg">${fmt(gastoTarjetaMesActual(fuente))}</div></div>`:''}
     </div>${nuevoPend.length?`<div class="warn-box"><p>${nuevoPend.length} movimiento(s) sin clasificar — ve a "Clasificar"</p></div>`:''}</div>`;
 }
 
@@ -3009,7 +3219,7 @@ function renderPlanesLista(){
         '</div>'+
         '<div style="text-align:right;font-size:12px">'+
           '<div style="color:var(--text3)">Objetivo: <b style="color:var(--text)">'+p.objetivo.toLocaleString('es-ES')+'€</b></div>'+
-          '<div style="color:var(--text3)">Fecha: <b style="color:var(--text)">'+p.fecha+'</b></div>'+
+          '<div style="color:var(--text3)">Fecha: <b style="color:var(--text)">'+fmtFechaCorta(p.fecha)+'</b></div>'+
         '</div>'+
       '</div>'+
 
@@ -3473,7 +3683,7 @@ function renderHistoricoCierres(){
   }
   el.innerHTML=[...STATE.historico_cierres].reverse().map(c=>`
     <div style="display:grid;grid-template-columns:1fr auto auto auto auto;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px">
-      <div><span style="font-weight:600">${c.mes}</span><span style="font-size:11px;color:var(--text3);margin-left:8px">${c.fecha}</span></div>
+      <div><span style="font-weight:600">${c.mes}</span><span style="font-size:11px;color:var(--text3);margin-left:8px">${fmtFechaCorta(c.fecha)}</span></div>
       <div style="text-align:right">Gasto: <b>${Math.round(c.gastoTotal).toLocaleString('es-ES')}€</b></div>
       <div class="${c.pctDesv>0?'neg':''}" style="text-align:right">${c.pctDesv>0?'+':''}${c.pctDesv}%</div>
       <div class="${c.disponible>=0?'pos':'neg'}" style="text-align:right;font-weight:600">${c.disponible>=0?'+':''}${Math.round(c.disponible).toLocaleString('es-ES')}€</div>
@@ -3549,7 +3759,7 @@ function mostrarResumenCierre(c){
 
   document.getElementById('cierre-ok').style.display='block';
   document.getElementById('cierre-ok-msg').innerHTML =
-    '<div style="font-weight:600;font-size:14px;margin-bottom:.75rem">✓ Mes cerrado — '+c.mes+(c.fecha?' <span style="font-weight:400;color:var(--text3);font-size:12px">(cerrado el '+c.fecha+')</span>':'')+'</div>'+
+    '<div style="font-weight:600;font-size:14px;margin-bottom:.75rem">✓ Mes cerrado — '+c.mes+(c.fecha?' <span style="font-weight:400;color:var(--text3);font-size:12px">(cerrado el '+fmtFechaCorta(c.fecha)+')</span>':'')+'</div>'+
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.75rem">'+
       '<div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:10px">'+
         '<div style="font-size:11px;opacity:.6;margin-bottom:3px">PRESUPUESTO</div>'+
@@ -3645,6 +3855,26 @@ function confirmarCierre(){
   const yaExiste=STATE.historico_cierres.find(c=>c.mes===mesActual);
   if(!yaExiste) STATE.historico_cierres.push(cierreData);
 
+  // Mejoras 7-8: al cerrar mes, el gasto de cada tarjeta del periodo cerrado pasa a "recibo pendiente"
+  // y se reinicia el contador de mes en curso. El cargo del banco vendrá los días 5-8 del mes
+  // siguiente y se reconciliará desde la pestaña Tarjetas.
+  TARJETAS_IDS.forEach(id=>{
+    const gastoPeriodo = gastoTarjetaMesActual(id);
+    if(gastoPeriodo > 0){
+      if(!STATE.tarjetas[id]) STATE.tarjetas[id] = {limite:0, recibo_pendiente:0, historico:[]};
+      // Si ya había un recibo pendiente sin reconciliar, lo dejamos en histórico como "no reconciliado"
+      const t = STATE.tarjetas[id];
+      if(t.recibo_pendiente > 0){
+        if(!t.historico) t.historico = [];
+        t.historico.push({mes:t.mes_recibo||'(no reconciliado)', importe:t.recibo_pendiente, fecha_cargo:'', movimiento_id:null, no_reconciliado:true});
+      }
+      t.recibo_pendiente = Math.round(gastoPeriodo);
+      t.mes_recibo = mesActual;
+      t.fecha_recibo = cierreData.fecha;
+    }
+  });
+  guardarTarjetas();
+
   // Persistir en Supabase
   const cierreSupabase = {
     id: 'c_'+Date.now(),
@@ -3705,21 +3935,22 @@ function renderSaldo(){
   const TARJETAS_KEYS=['cred-juan','cred-laura','iberia-juan','iberia-laura'];
   document.getElementById('saldo-ing').value=STATE.saldoING;
 
-  const totalDeuda=TARJETAS_KEYS.reduce((a,k)=>a+(STATE.deuda[k]||0),0);
+  // Mejora 9: lo que se descuenta del disponible es el GASTO TARJETAS MES EN CURSO,
+  // no el recibo pendiente del mes anterior (ese saldrá automáticamente al cobrarse).
+  const gastoTarjetasMes = TARJETAS_KEYS.reduce((a,k)=>a+gastoTarjetaMesActual(k),0);
+  const reciboPendienteTotal = TARJETAS_KEYS.reduce((a,k)=>a+(STATE.tarjetas[k]?.recibo_pendiente||0),0);
   // Saldo reservado: si hay movimientos del mes en curso, calcularlo automáticamente
   // Si no (inicio de mes), usar el valor manual
   const tieneMov = STATE.movimientos.length > 0;
   let reservado;
   if(tieneMov){
-    // Automático: saldo pendiente de planes + saldo acumulado de prorratas
     const resPlan = STATE.planes.reduce(function(a,p){return a+Math.max(saldoPlanDisp(p),0);},0);
     const resPror = STATE.prorratas.reduce(function(a,p){return a+Math.max(saldoPror(p),0);},0);
     reservado = Math.round(resPlan + resPror);
   } else {
-    // Manual: hasta tener movimientos reales del mes
     reservado = STATE.saldoReservado||0;
   }
-  const disponible=STATE.saldoING-totalDeuda-reservado;
+  const disponible = STATE.saldoING - gastoTarjetasMes - reservado;
 
   // Sincronizar input
   const resEl=document.getElementById('saldo-reservado');
@@ -3731,21 +3962,24 @@ function renderSaldo(){
 
   document.getElementById('saldo-kpis').innerHTML=`
     <div class="kpi"><div class="kpi-label">Saldo ING</div><div class="kpi-value pos">${fmt(STATE.saldoING)}</div></div>
-    <div class="kpi"><div class="kpi-label">Deuda tarjetas</div><div class="kpi-value neg">-${fmt(totalDeuda)}</div></div>
+    <div class="kpi"><div class="kpi-label">Gasto tarjetas mes</div><div class="kpi-value neg">-${fmt(gastoTarjetasMes)}</div><div class="kpi-sub">Mes en curso</div></div>
     <div class="kpi"><div class="kpi-label">Saldo reservado</div><div class="kpi-value warn">-${fmt(reservado)}</div><div class="kpi-sub">Planes + prorratas</div></div>
     <div class="kpi"><div class="kpi-label">Disponible real</div><div class="kpi-value ${disponible>=0?'pos':'neg'}">${disponible>=0?'+':'-'}${fmt(Math.abs(disponible))}</div></div>`;
 
-  // Tarjetas editables
+  // Detalle por tarjeta: gasto mes en curso + recibo pendiente (informativo)
   const editEl=document.getElementById('deuda-tarjetas-edit');
-  if(editEl) editEl.innerHTML=TARJETAS_KEYS.map(function(k){
-    var v=STATE.deuda[k]||0;
-    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">'+
-      '<span style="font-size:13px;color:var(--text2)">'+(TARJETA_LABEL[k]||k)+'</span>'+
-      '<div style="display:flex;align-items:center;gap:6px">'+
-        '<input type="number" id="deuda-'+k+'" value="'+v+'" step="0.01" style="width:110px;text-align:right;font-size:13px;font-weight:500;color:'+(v>0?'var(--red)':'var(--text2)')+'">'+
-        '<span style="font-size:12px;color:var(--text3)">€</span>'+
-      '</div></div>';
-  }).join('');
+  if(editEl) editEl.innerHTML='<div style="font-size:12px;color:var(--text3);margin-bottom:.5rem">Gasto del mes en curso + recibo pendiente del mes anterior (informativo, no se contabiliza). Edita los límites en la pestaña Tarjetas.</div>'+
+    TARJETAS_KEYS.map(function(k){
+      const gasto = gastoTarjetaMesActual(k);
+      const recibo = STATE.tarjetas[k]?.recibo_pendiente || 0;
+      return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'+
+        '<div style="display:flex;align-items:center;justify-content:space-between">'+
+          '<span style="font-size:13px;color:var(--text2)">💳 '+(TARJETA_LABEL[k]||k)+'</span>'+
+          '<span style="font-size:13px;font-weight:500;color:'+(gasto>0?'var(--red)':'var(--text3)')+'">'+(gasto>0?'-':'')+fmt(gasto)+'</span>'+
+        '</div>'+
+        (recibo>0?'<div style="display:flex;align-items:center;justify-content:space-between;margin-top:2px;font-size:11px;color:var(--text3)"><span style="font-style:italic">Recibo pendiente '+(STATE.tarjetas[k]?.mes_recibo||'')+'</span><span>-'+fmt(recibo)+'</span></div>':'')+
+      '</div>';
+    }).join('');
 
   // Contador movimientos
   const countEl=document.getElementById('mov-count-info');
@@ -4423,6 +4657,296 @@ function hipTab(t, btn){
   if(t==='amortizar') renderHipAmortizar();
 }
 
+// ═══════════════════════════════════════════════
+// TARJETAS DE CRÉDITO
+// ═══════════════════════════════════════════════
+const TARJETAS_IDS = ['iberia-juan','iberia-laura','cred-juan','cred-laura'];
+
+function tarjTab(t,btn){
+  ['actual','reconciliar','historico'].forEach(x=>{
+    const el=document.getElementById('tarj-'+x);
+    if(el) el.style.display=x===t?'block':'none';
+  });
+  document.querySelectorAll('#p-tarjetas .tab').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  if(t==='actual') renderTarjetasActual();
+  if(t==='reconciliar') renderTarjetasReconciliar();
+  if(t==='historico') renderTarjetasHistorico();
+}
+
+function renderTarjetas(){ renderTarjetasActual(); }
+
+// Calcula el gasto del mes en curso de una tarjeta: suma todos los movimientos
+// con esa fuente y fecha posterior al último cierre. Las devoluciones (positivos) restan.
+function gastoTarjetaMesActual(idTarjeta){
+  let fechaCorte = null;
+  if(STATE.historico_cierres && STATE.historico_cierres.length){
+    const ult = STATE.historico_cierres[STATE.historico_cierres.length-1];
+    if(ult && ult.fecha){
+      const partes = ult.fecha.split('/');
+      if(partes.length===3) fechaCorte = new Date(+partes[2], +partes[1]-1, +partes[0]);
+    }
+  }
+  let total = 0;
+  STATE.movimientos.forEach(m=>{
+    if(m.fuente !== idTarjeta) return;
+    if(fechaCorte){
+      const f = parseFecha(m.fecha);
+      if(!f || f.getTime() <= fechaCorte.getTime()) return;
+    }
+    // Sumar gastos (negativos) en valor absoluto, restar devoluciones (positivos)
+    if(m.importe < 0) total += Math.abs(m.importe);
+    else total -= m.importe;
+  });
+  return Math.max(0, total);
+}
+
+// Mes en curso en formato "Mayo 2026"
+function mesEnCursoLabel(){
+  const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  // Si hay cierre, el "mes en curso" es el siguiente al cierre
+  if(STATE.historico_cierres && STATE.historico_cierres.length){
+    const ult = STATE.historico_cierres[STATE.historico_cierres.length-1];
+    if(ult && ult.fecha){
+      const partes = ult.fecha.split('/');
+      if(partes.length===3){
+        const m = parseInt(partes[1],10);
+        const a = parseInt(partes[2],10);
+        const sigM = m===12 ? 1 : m+1;
+        const sigA = m===12 ? a+1 : a;
+        return (meses[sigM-1].charAt(0).toUpperCase()+meses[sigM-1].slice(1))+' '+sigA;
+      }
+    }
+  }
+  const hoy = new Date();
+  return (meses[hoy.getMonth()].charAt(0).toUpperCase()+meses[hoy.getMonth()].slice(1))+' '+hoy.getFullYear();
+}
+
+function renderTarjetasActual(){
+  const cont = document.getElementById('tarj-cards');
+  if(!cont) return;
+  const mesLbl = mesEnCursoLabel();
+  cont.innerHTML = TARJETAS_IDS.map(id=>{
+    const t = STATE.tarjetas[id] || {limite:0, recibo_pendiente:0};
+    const gasto = gastoTarjetaMesActual(id);
+    const disponible = (t.limite||0) - gasto;
+    const pctConsumido = t.limite>0 ? Math.min(100, Math.round(gasto/t.limite*100)) : 0;
+    const colorBarra = pctConsumido >= 90 ? 'var(--red)' : pctConsumido >= 70 ? 'var(--amber)' : 'var(--green)';
+    return `<div class="card" style="border-left:4px solid ${colorBarra}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.75rem">
+        <div>
+          <div style="font-weight:600;font-size:14px">💳 ${FUENTE_LABEL[id]}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">Mes en curso: ${mesLbl}</div>
+        </div>
+        <span class="badge ${pctConsumido>=90?'b-red':pctConsumido>=70?'b-amber':'b-green'}" style="font-size:11px">${pctConsumido}%</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:13px;align-items:center">
+        <div style="color:var(--text2)">Límite</div>
+        <div style="text-align:right">
+          <input type="number" value="${t.limite||0}" step="100"
+            style="width:110px;text-align:right;font-weight:500;background:transparent;border:none;border-bottom:1px solid transparent;color:var(--text);padding:2px 4px"
+            onchange="editarLimiteTarjeta('${id}',this.value)"
+            onfocus="this.style.borderBottomColor='var(--green)'" onblur="this.style.borderBottomColor='transparent'">€
+        </div>
+
+        <div style="color:var(--text2)">Gasto mes en curso</div>
+        <div style="text-align:right;font-weight:500" class="${gasto>0?'neg':''}">${gasto>0?'-':''}${fmt(gasto)}</div>
+
+        <div style="color:var(--text2)">Disponible mes</div>
+        <div style="text-align:right;font-weight:600" class="${disponible<0?'neg':'pos'}">${fmt(disponible)}</div>
+      </div>
+
+      <div style="margin-top:.75rem">
+        <div class="prog-bg"><div class="prog-fill" style="width:${pctConsumido}%;background:${colorBarra}"></div></div>
+      </div>
+
+      <div style="margin-top:1rem;padding-top:.75rem;border-top:1px dashed var(--border);font-size:12px;color:var(--text3)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span>Recibo pendiente ${t.mes_recibo?'('+t.mes_recibo+')':'mes anterior'}</span>
+          <span class="${t.recibo_pendiente>0?'neg':''}" style="font-weight:500">${t.recibo_pendiente>0?'-'+fmt(t.recibo_pendiente):'—'}</span>
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-top:4px;font-style:italic">No afecta al disponible. Se reconciliará cuando se cargue en ING.</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function editarLimiteTarjeta(id, valor){
+  if(!STATE.tarjetas[id]) STATE.tarjetas[id] = {limite:0, recibo_pendiente:0, historico:[]};
+  STATE.tarjetas[id].limite = parseFloat(valor)||0;
+  guardarTarjetas();
+  renderTarjetasActual();
+}
+
+// Detecta posibles cargos del recibo de tarjeta dentro de los movimientos de ING.
+// Heurística: movimiento ING negativo cuyo importe sea cercano al recibo_pendiente
+// de alguna tarjeta y la fecha sea posterior al recibo.
+function buscarCandidatosCargo(){
+  const candidatos = [];
+  STATE.movimientos.filter(m=>m.fuente==='ing' && m.importe<0).forEach(m=>{
+    TARJETAS_IDS.forEach(id=>{
+      const t = STATE.tarjetas[id];
+      if(!t || t.recibo_pendiente<=0) return;
+      const diff = Math.abs(Math.abs(m.importe) - t.recibo_pendiente);
+      const tolerancia = Math.max(5, t.recibo_pendiente*0.02); // 2% o 5€
+      if(diff <= tolerancia){
+        // Solo si concept menciona Iberia/ING/tarjeta
+        const c = (m.concepto||'').toUpperCase();
+        const matchTexto = c.includes('IBERIA')||c.includes('TARJETA')||c.includes('CREDITO')||c.includes('VISA')||c.includes('MASTERCARD')||c.includes('AMERICAN')||c.includes('AMEX');
+        candidatos.push({mov:m, tarjeta:id, diff:diff, matchTexto:matchTexto});
+      }
+    });
+  });
+  return candidatos;
+}
+
+function renderTarjetasReconciliar(){
+  const recibos = document.getElementById('tarj-recibos-pendientes');
+  const candidatos = document.getElementById('tarj-candidatos-cargo');
+
+  // Lista de recibos pendientes
+  const tarjetasConRecibo = TARJETAS_IDS.filter(id=>(STATE.tarjetas[id]?.recibo_pendiente||0)>0);
+  if(recibos){
+    recibos.innerHTML = tarjetasConRecibo.length
+      ? '<table style="width:100%"><thead><tr><th>Tarjeta</th><th>Mes</th><th style="text-align:right">Importe</th><th></th></tr></thead><tbody>'+
+          tarjetasConRecibo.map(id=>{
+            const t = STATE.tarjetas[id];
+            return `<tr>
+              <td>💳 ${FUENTE_LABEL[id]}</td>
+              <td style="font-size:12px;color:var(--text3)">${t.mes_recibo||'—'}</td>
+              <td style="text-align:right;font-weight:500" class="neg">-${fmt(t.recibo_pendiente)}</td>
+              <td style="text-align:right">
+                <button class="btn btn-sm" onclick="reconciliarManual('${id}')">Reconciliar manualmente</button>
+              </td>
+            </tr>`;
+          }).join('')+'</tbody></table>'
+      : '<div style="color:var(--text3);font-size:13px;padding:.75rem 0">No hay recibos pendientes en ninguna tarjeta.</div>';
+  }
+
+  if(candidatos){
+    const lista = buscarCandidatosCargo();
+    candidatos.innerHTML = lista.length
+      ? '<table style="width:100%"><thead><tr><th>Fecha ING</th><th>Concepto</th><th style="text-align:right">Importe</th><th>¿Coincide con?</th><th></th></tr></thead><tbody>'+
+          lista.map(c=>`<tr style="${c.matchTexto?'background:rgba(45,212,160,0.05)':''}">
+            <td style="font-size:12px">${fmtFechaCorta(c.mov.fecha)}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.mov.concepto}">${c.mov.concepto}</td>
+            <td style="text-align:right;font-weight:500" class="neg">${c.mov.importe}€</td>
+            <td><span class="badge b-amber" style="font-size:11px">💳 ${FUENTE_LABEL[c.tarjeta]}</span> ${c.matchTexto?'<span class="badge b-green" style="font-size:10px;margin-left:4px">Texto coincide</span>':''}</td>
+            <td><button class="btn btn-sm btn-primary" onclick="confirmarReconciliacion('${c.mov.id}','${c.tarjeta}')">Reconciliar</button></td>
+          </tr>`).join('')+'</tbody></table>'
+      : '<div style="color:var(--text3);font-size:13px;padding:.75rem 0">No se han detectado movimientos en ING que coincidan con un recibo pendiente.</div>';
+  }
+}
+
+function confirmarReconciliacion(idMov, idTarjeta){
+  const m = STATE.movimientos.find(x=>x.id===idMov);
+  const t = STATE.tarjetas[idTarjeta];
+  if(!m || !t) return;
+  if(!confirm('Reconciliar el cargo de '+Math.abs(m.importe)+'€ del '+fmtFechaCorta(m.fecha)+' con el recibo pendiente de '+FUENTE_LABEL[idTarjeta]+' ('+fmt(t.recibo_pendiente)+')?\n\nSe marcará el movimiento como reconciliado y se vaciará el recibo pendiente.')) return;
+
+  // Mover el recibo pendiente al histórico
+  if(!t.historico) t.historico = [];
+  t.historico.push({
+    mes: t.mes_recibo || '—',
+    importe: t.recibo_pendiente,
+    fecha_cargo: m.fecha,
+    movimiento_id: m.id
+  });
+
+  // Limpiar el recibo pendiente
+  t.recibo_pendiente = 0;
+  t.fecha_recibo = '';
+  t.mes_recibo = '';
+
+  // Marcar el movimiento con una nota especial
+  m.cat = 'Recibo tarjeta';
+  m.nota = (m.nota?m.nota+' · ':'')+'Reconciliado con '+FUENTE_LABEL[idTarjeta];
+  guardarMovimientoEnSupa(m);
+
+  guardarTarjetas();
+  renderTarjetasReconciliar();
+  alert('✓ Reconciliación completada.');
+}
+
+function reconciliarManual(idTarjeta){
+  const t = STATE.tarjetas[idTarjeta];
+  if(!t) return;
+  if(!confirm('¿Marcar como cobrado el recibo pendiente de '+FUENTE_LABEL[idTarjeta]+' ('+fmt(t.recibo_pendiente)+') sin enlazarlo a un movimiento?\n\nSe pasará al histórico igualmente.')) return;
+  if(!t.historico) t.historico = [];
+  t.historico.push({
+    mes: t.mes_recibo || '—',
+    importe: t.recibo_pendiente,
+    fecha_cargo: new Date().toLocaleDateString('es-ES'),
+    movimiento_id: null,
+    manual: true
+  });
+  t.recibo_pendiente = 0;
+  t.fecha_recibo = '';
+  t.mes_recibo = '';
+  guardarTarjetas();
+  renderTarjetasReconciliar();
+}
+
+function renderTarjetasHistorico(){
+  const cont = document.getElementById('tarj-historico-tabla');
+  if(!cont) return;
+
+  // Recopilar todos los meses con histórico de cualquier tarjeta
+  const mesesSet = new Set();
+  TARJETAS_IDS.forEach(id=>{
+    const t = STATE.tarjetas[id];
+    (t?.historico||[]).forEach(h=>mesesSet.add(h.mes));
+  });
+  const meses = [...mesesSet].sort((a,b)=>{
+    // Ordenar por aparición de fecha si existe, si no alfabético inverso
+    return a.localeCompare(b);
+  });
+
+  if(!meses.length){
+    cont.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:1rem 0">Sin histórico aún. Reconcilia los recibos del mes anterior para empezar a ver la evolución.</div>';
+    return;
+  }
+
+  cont.innerHTML = `<div style="overflow-x:auto"><table style="min-width:100%">
+    <thead><tr>
+      <th style="text-align:left">Mes</th>
+      ${TARJETAS_IDS.map(id=>`<th style="text-align:right">💳 ${FUENTE_LABEL[id]}</th>`).join('')}
+      <th style="text-align:right;font-weight:600">Total</th>
+    </tr></thead>
+    <tbody>
+      ${meses.map(mes=>{
+        let totalMes = 0;
+        const cells = TARJETAS_IDS.map(id=>{
+          const t = STATE.tarjetas[id];
+          const reg = (t?.historico||[]).find(h=>h.mes===mes);
+          const v = reg?reg.importe:0;
+          totalMes += v;
+          return v>0
+            ? `<td style="text-align:right;font-weight:500" class="neg">-${fmt(v)}</td>`
+            : `<td style="text-align:right;color:var(--text3)">—</td>`;
+        }).join('');
+        return `<tr>
+          <td style="font-weight:500">${mes}</td>
+          ${cells}
+          <td style="text-align:right;font-weight:600" class="${totalMes>0?'neg':''}">${totalMes>0?'-'+fmt(totalMes):'—'}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+    <tfoot>
+      <tr style="font-weight:600;border-top:1px solid var(--border2)">
+        <td>Total acumulado</td>
+        ${TARJETAS_IDS.map(id=>{
+          const t = STATE.tarjetas[id];
+          const total = (t?.historico||[]).reduce((a,h)=>a+h.importe,0);
+          return `<td style="text-align:right" class="${total>0?'neg':''}">${total>0?'-'+fmt(total):'—'}</td>`;
+        }).join('')}
+        <td style="text-align:right" class="neg">-${fmt(TARJETAS_IDS.reduce((a,id)=>a+(STATE.tarjetas[id]?.historico||[]).reduce((b,h)=>b+h.importe,0),0))}</td>
+      </tr>
+    </tfoot>
+  </table></div>`;
+}
+
 function renderHipoteca(){renderHipResumen();}
 
 function renderHipResumen(){
@@ -4712,7 +5236,7 @@ function renderIngresosHistorico(){
   if(tbody){
     tbody.innerHTML = cobros.length
       ? cobros.map(c=>`<tr>
-          <td style="font-size:12px;color:var(--text2);white-space:nowrap">${c.fecha}</td>
+          <td style="font-size:12px;color:var(--text2);white-space:nowrap">${fmtFechaCorta(c.fecha)}</td>
           <td><span class="badge b-green" style="font-size:10px">${c.concepto}</span> <span style="color:var(--text3);font-size:12px;margin-left:6px">${c.conceptoOriginal}</span></td>
           <td style="text-align:right;font-weight:500" class="pos">+${fmt(c.importe)}</td>
           <td><span class="badge b-blue" style="font-size:10px">${FUENTE_LABEL[c.fuente]||c.fuente||'—'}</span></td>
